@@ -11,7 +11,7 @@ func main() {
 	s := strace.STrace{
 		Flags: map[string]string{
 			"-s": "16384",
-			"-p": "12",
+			"-p": "1092",
 			"-e": "read,write",
 		},
 	}
