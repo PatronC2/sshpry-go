@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -71,6 +72,7 @@ func GetSSHProcesses() ([]int, error) {
 }
 
 func StartTracing(pid int) {
+	var quotedString = regexp.MustCompile(`"([^"]*)"`)
 	mu.Lock()
 	if activeProcesses[pid] {
 		mu.Unlock()
@@ -103,15 +105,36 @@ func StartTracing(pid int) {
 	go func() {
 		defer stderrFile.Close()
 
+		var buffer strings.Builder
+
 		for {
 			stderrStr := s.Stderr.String()
 			if stderrStr != "" {
 				lines := strings.Split(stderrStr, "\n")
 				for _, line := range lines {
 					line = strings.TrimSpace(line)
-					if strings.HasSuffix(line, "= 1") {
-						stderrFile.WriteString(line + "\n")
+					if !strings.HasSuffix(line, "= 1") {
+						continue
 					}
+
+					matches := quotedString.FindStringSubmatch(line)
+					if len(matches) >= 2 {
+						content := matches[1]
+
+						unescaped, err := strconv.Unquote(`"` + content + `"`)
+						if err != nil {
+							unescaped = content
+						}
+
+						unescaped = strings.ReplaceAll(unescaped, "\r", "\n")
+
+						buffer.WriteString(unescaped)
+					}
+				}
+
+				if buffer.Len() > 0 {
+					stderrFile.WriteString(buffer.String())
+					buffer.Reset()
 				}
 			}
 
